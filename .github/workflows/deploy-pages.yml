@@ -1,81 +1,54 @@
-name: Import and deploy wedding invitation
+name: Deploy wedding invitation
 on:
   push:
     branches: [main]
   workflow_dispatch:
 permissions:
-  contents: write
+  contents: read
   pages: write
   id-token: write
 concurrency:
-  group: wedding-pages
+  group: pages
   cancel-in-progress: false
 jobs:
-  import-and-deploy:
+  deploy:
     runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
-      - name: Download original site into this repository
-        env:
-          SOURCE_SITE: https://jeremy-yuri-wedding-invitation.jeremy-hsieh.chatgpt.site
-        run: |
-          set -euo pipefail
-          mkdir -p assets
-          curl -fLsS --retry 3 "$SOURCE_SITE/" -o index.html
-          curl -fLsS --retry 3 "$SOURCE_SITE/styles.css" -o styles.css
-          curl -fLsS --retry 3 "$SOURCE_SITE/app.js" -o app.js
-          for filename in \
-            Jeremy_Yuri_Wedding.ics \
-            couple-skytree-cutout-v2.png \
-            cover-background.png \
-            details-background.png \
-            heart.svg \
-            loading-wedding-logo.jpg \
-            original-cover.jpeg \
-            parent-yu.svg \
-            typography-corrected-parents.webp \
-            typography-cover.jpeg \
-            typography-details.jpeg \
-            venue-heart-pin.png; do
-            curl -fLsS --retry 3 "$SOURCE_SITE/assets/$filename" -o "assets/$filename"
-          done
-          test -s index.html
-          test -s styles.css
-          test -s app.js
-          test -s assets/cover-background.png
-          touch .nojekyll
-      - name: Save recovered site files to GitHub
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add index.html styles.css app.js assets/ .nojekyll
-          if ! git diff --cached --quiet; then
-            git commit -m "Import original Jeremy and Yuri wedding invitation"
-            git push origin HEAD:main
-          fi
       - uses: actions/configure-pages@v5
         id: pages
-      - name: Prepare share URLs
+        with:
+          enablement: true
+      - name: Prepare website and sharing metadata
         env:
-          BASE_URL: ${{ steps.pages.outputs.base_url }}
+          PAGES_BASE_URL: ${{ steps.pages.outputs.base_url }}
         run: |
+          set -euo pipefail
+          mkdir -p _site
+          cp index.html styles.css app.js _site/
+          cp -R assets _site/
+          touch _site/.nojekyll
           python3 - <<'PY'
-          from pathlib import Path
+          import html
           import os
+          from pathlib import Path
           import re
-          page = Path("index.html")
-          s = page.read_text(encoding="utf-8")
-          base = os.environ["BASE_URL"].rstrip("/")
-          s = re.sub(r'(<meta\\s+property="og:url"\\s+content=")[^"]*', lambda m: m.group(1) + base + "/", s, count=1)
-          s = re.sub(r'(<meta\\s+property="og:image"\\s+content=")[^"]*', lambda m: m.group(1) + base + "/assets/original-cover.jpeg", s, count=1)
-          page.write_text(s, encoding="utf-8")
+          base = os.environ["PAGES_BASE_URL"].rstrip("/")
+          path = Path("_site/index.html")
+          page = path.read_text(encoding="utf-8")
+          for prop, url in {"og:url": base + "/", "og:image": base + "/assets/original-cover.jpeg"}.items():
+              pattern = r'(<meta\s+property="' + re.escape(prop) + r'"\s+content=")[^"]*'
+              page, count = re.subn(pattern, lambda m: m.group(1) + html.escape(url, quote=True), page, count=1)
+              if count != 1:
+                  raise SystemExit(f"Missing {prop}")
+          path.write_text(page, encoding="utf-8")
           PY
       - uses: actions/upload-pages-artifact@v4
         with:
-          path: .
+          path: _site
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
