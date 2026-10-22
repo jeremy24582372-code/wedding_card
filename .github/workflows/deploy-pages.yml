@@ -20,8 +20,6 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/configure-pages@v5
         id: pages
-        with:
-          enablement: true
       - name: Prepare website and sharing metadata
         env:
           PAGES_BASE_URL: ${{ steps.pages.outputs.base_url }}
