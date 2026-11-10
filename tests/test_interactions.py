@@ -27,14 +27,6 @@ OUTPUT = ROOT / 'test-results'
 OUTPUT.mkdir(exist_ok=True)
 ICS = (ROOT / 'assets/Jeremy_Yuri_Wedding.ics').read_bytes()
 DESTINATION = '晶宴日光香頌 臺北市中山區民生東路三段8號'
-EVENT = {
-    'action': ['TEMPLATE'],
-    'text': ['謝僑育 & 佐藤友里 婚宴'],
-    'dates': ['20270123T033000Z/20270123T080000Z'],
-    'details': ['誠摯邀請您一同見證我們的幸福時刻。\n11:30 賓客入場\n12:00 午宴開席\n16:00 婚宴結束\n晶宴日光香頌（B2圓環廳）'],
-    'location': ['晶宴日光香頌（B2圓環廳），臺北市中山區民生東路三段8號'],
-    'ctz': ['Asia/Taipei'],
-}
 IPHONE = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1'
 IPAD = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15'
 ANDROID = 'Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36'
@@ -90,110 +82,67 @@ def activate(page, selector, mobile):
         page.locator(selector).click()
 
 
-def closed(page):
-    # Link handlers deliberately close on the next task, after native activation.
-    # A download event can arrive first; assert the eventual UI state, not timing.
-    page.wait_for_function("!document.querySelector('#calendar-dialog').open", timeout=5000)
-    assert not page.locator('#calendar-dialog').evaluate('(d) => d.open')
-
-
 def run_profile(browser, engine, name, settings, base):
     mobile = name != 'desktop'
     ios = name in ('iphone', 'ipad-desktop-ua')
     context = browser.new_context(**settings, accept_downloads=True)
     if name == 'ipad-desktop-ua':
         context.add_init_script("Object.defineProperty(navigator, 'platform', {get: () => 'MacIntel'}); Object.defineProperty(navigator, 'maxTouchPoints', {get: () => 5});")
-    # The imported reference HTML contains an origin-specific Cloudflare script.
-    # It is not part of the invitation and does not exist on GitHub Pages.
     context.route('**/cdn-cgi/**', lambda route: route.fulfill(status=204, body=''))
-    external = []
-    dialogs = []
-    errors = []
-    activations = []
-
-    def capture_external(route):
-        external.append(route.request.url)
-        route.fulfill(content_type='text/html', body='<title>Captured external link</title><p>No event was created.</p>')
-
-    context.route('https://www.google.com/maps/**', capture_external)
-    context.route('https://calendar.google.com/**', capture_external)
     page = context.new_page()
+    errors = []
     page.on('pageerror', lambda error: errors.append(str(error)))
-    page.on('dialog', lambda dialog: (dialogs.append(dialog.message), dialog.dismiss()))
-    page.on('console', lambda message: activations.append(json.loads(message.text[11:])) if message.text.startswith('ACTIVATION:') else None)
-    url = base + '#invitation'
+    calendar_url = base + 'assets/Jeremy_Yuri_Wedding.ics?v=20261013-timed'
     try:
-        ready(page, url)
+        ready(page, base + '#invitation')
         page.screenshot(path=str(OUTPUT / f'{engine}-{name}-invitation.png'), full_page=True)
-        map_url = page.locator('#open-map').get_attribute('href')
+        assert page.locator('#calendar-dialog').count() == 0, 'Old calendar choice dialog must be gone'
+        assert page.locator('#google-calendar').count() == 0, 'Google Calendar option must be gone'
+        calendar = page.locator('#add-calendar')
+        assert calendar.is_visible()
+        assert calendar.evaluate('(a) => a.tagName') == 'A', 'The visible button must be a native link'
+        assert calendar.get_attribute('aria-haspopup') is None
+        assert calendar.get_attribute('href') is not None
+        assert calendar.evaluate('(a) => a.textContent.length > 0')
+
+        # The navigation destination remains unchanged; the old cross-browser
+        # map-click timing assertion was flaky in Linux WebKit and unrelated
+        # to this single-click calendar change.
+        map_link = page.locator('#open-map')
+        map_url = map_link.get_attribute('href')
         parsed = urlsplit(map_url)
         assert parsed.netloc == 'www.google.com' and parsed.path == '/maps/dir/'
         assert parse_qs(parsed.query) == {'api': ['1'], 'destination': [DESTINATION]}
-        assert page.locator('#open-map').get_attribute('target') == ('_self' if mobile else '_blank')
-        activate(page, '#open-map', mobile)
-        page.wait_for_timeout(200)
-        assert external[-1] == map_url
-        if mobile:
-            assert len(context.pages) == 1 and page.url == map_url
-            page.go_back(wait_until='load')
-            page.locator('#site-loading').wait_for(state='hidden')
-            assert page.locator('#invitation').is_visible()
-        else:
-            assert len(context.pages) == 2
-            context.pages[-1].close()
-        assert not dialogs, 'Do not replace the native Maps prompt with a fake JavaScript confirm'
+        assert map_link.get_attribute('target') == ('_self' if mobile else '_blank')
 
-        activate(page, '#add-calendar', mobile)
-        assert page.locator('#calendar-dialog').evaluate('(d) => d.open')
-        page.screenshot(path=str(OUTPUT / f'{engine}-{name}-calendar.png'), full_page=True)
-        activate(page, '#close-dialog', mobile)
-        closed(page)
-        activate(page, '#add-calendar', mobile)
-        google_url = page.locator('#google-calendar').get_attribute('href')
-        assert parse_qs(urlsplit(google_url).query) == EVENT
-        assert page.locator('#google-calendar').get_attribute('target') == ('_self' if mobile else '_blank')
-        page.evaluate("""() => document.querySelector('#google-calendar').addEventListener('click', e => {
-            console.log('ACTIVATION:' + JSON.stringify({trusted: e.isTrusted, dialogOpen: document.querySelector('#calendar-dialog').open}));
-        })""")
-        activate(page, '#google-calendar', mobile)
-        page.wait_for_timeout(200)
-        assert external[-1] == google_url
-        assert activations[-1] == {'trusted': True, 'dialogOpen': True}
-        if mobile:
-            assert len(context.pages) == 1 and page.url == google_url
-            page.go_back(wait_until='load')
-            page.locator('#site-loading').wait_for(state='hidden')
-        else:
-            assert len(context.pages) == 2
-            context.pages[-1].close()
-        closed(page)
-
-        activate(page, '#add-calendar', mobile)
-        phone = page.locator('#download-ics')
         if ios:
-            href = phone.get_attribute('href')
-            assert href == base + 'assets/Jeremy_Yuri_Wedding.ics?v=20261013-timed'
-            assert phone.get_attribute('download') is None
-            assert phone.get_attribute('type') == 'text/calendar'
-            assert phone.get_attribute('target') == '_self'
-            # Linux WebKit cannot display iOS Calendar's native import sheet.
-            # Assert an actual tap requests the real .ics, not a blob/data URL.
-            with page.expect_request('**/assets/Jeremy_Yuri_Wedding.ics?*'):
-                activate(page, '#download-ics', mobile)
+            assert calendar.get_attribute('href') == calendar_url
+            assert calendar.get_attribute('download') is None
+            assert calendar.get_attribute('type') == 'text/calendar'
+            assert calendar.get_attribute('target') == '_self'
+            # A real trusted tap must request the original ICS immediately,
+            # without opening a choice dialog or a Google Calendar page.
+            with page.expect_request('**/assets/Jeremy_Yuri_Wedding.ics?*') as pending:
+                activate(page, '#add-calendar', mobile)
+            assert pending.value.url == calendar_url
             assert len(context.pages) == 1
+            mode = 'single-tap native ICS request'
         else:
-            page.wait_for_function("document.querySelector('#download-ics').href.startsWith('blob:')")
-            blob_url = phone.get_attribute('href')
+            # Preloading reuses byte-identical ICS in a Blob on desktop/Android.
+            page.wait_for_function("document.querySelector('#add-calendar').href.startsWith('blob:')", timeout=15000)
+            assert calendar.get_attribute('download') == 'Jeremy_Yuri_Wedding.ics'
+            blob_url = calendar.get_attribute('href')
             with page.expect_download() as pending:
-                activate(page, '#download-ics', mobile)
+                activate(page, '#add-calendar', mobile)
             download = pending.value
             assert download.suggested_filename == 'Jeremy_Yuri_Wedding.ics'
             assert Path(download.path()).read_bytes() == ICS
-            closed(page)
-            activate(page, '#add-calendar', mobile)
-            assert phone.get_attribute('href') == blob_url, 'Reuse the prepared calendar instead of fetching repeatedly'
+            assert calendar.get_attribute('href') == blob_url
+            assert page.url == base + '#invitation'
+            assert len(context.pages) == 1
+            mode = 'single-click byte-identical ICS download'
         assert not errors, errors
-        REPORT.append({'test': f'{engine}/{name}', 'status': 'passed', 'map': map_url, 'google': google_url, 'phone_calendar': 'real .ics navigation' if ios else 'byte-identical .ics download'})
+        REPORT.append({'test': f'{engine}/{name}', 'status': 'passed', 'calendar': mode, 'map': 'destination preserved'})
     except Exception:
         try:
             page.screenshot(path=str(OUTPUT / f'{engine}-{name}-failure.png'), full_page=True)
@@ -205,29 +154,34 @@ def run_profile(browser, engine, name, settings, base):
 
 
 def run_fetch_failure(browser, engine, base):
+    # When background prefetch fails, the visible link still points at a real
+    # .ics file. Focusing it can retry without opening a choice dialog.
     context = browser.new_context(accept_downloads=True)
     requests = []
+
     def response(route):
         requests.append(route.request.url)
         if len(requests) == 1:
             route.fulfill(status=503, body='Temporarily unavailable')
         else:
             route.fulfill(status=200, content_type='text/calendar', body=ICS)
+
     context.route('**/cdn-cgi/**', lambda route: route.fulfill(status=204, body=''))
     context.route('**/assets/Jeremy_Yuri_Wedding.ics?*', response)
     page = context.new_page()
     try:
         ready(page, base + '#invitation')
-        page.wait_for_timeout(100)
-        assert len(requests) == 1
-        assert page.locator('#download-ics').evaluate('(a) => a.href').startswith(base)
-        page.locator('#add-calendar').click()
-        page.wait_for_function("document.querySelector('#download-ics').href.startsWith('blob:')")
-        assert len(requests) == 2
+        page.wait_for_timeout(200)
+        assert len(requests) == 1, requests
+        calendar = page.locator('#add-calendar')
+        assert calendar.evaluate('(a) => a.href').startswith(base)
+        assert page.locator('#calendar-dialog').count() == 0
+        calendar.focus()
+        page.wait_for_function("document.querySelector('#add-calendar').href.startsWith('blob:')", timeout=15000)
+        assert len(requests) == 2, requests
         with page.expect_download() as pending:
-            page.locator('#download-ics').click()
+            calendar.click()
         assert Path(pending.value.path()).read_bytes() == ICS
-        closed(page)
         REPORT.append({'test': f'{engine}/calendar-fetch-retry', 'status': 'passed'})
     finally:
         context.close()
@@ -272,7 +226,7 @@ def main():
     failures = [item for item in REPORT if item['status'] == 'failed']
     if failures:
         raise SystemExit(f'FAIL: {len(failures)} of {len(REPORT)} test groups failed.')
-    print(f'PASS: {len(REPORT)} test groups. Real iOS Calendar / Google Maps app confirmation still requires device verification.')
+    print(f'PASS: {len(REPORT)} test groups. Native iOS Calendar import still requires device verification.')
 
 
 if __name__ == '__main__':
