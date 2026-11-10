@@ -105,15 +105,30 @@ def run_profile(browser, engine, name, settings, base):
         assert calendar.get_attribute('href') is not None
         assert calendar.evaluate('(a) => a.textContent.length > 0')
 
-        # The navigation destination remains unchanged; the old cross-browser
-        # map-click timing assertion was flaky in Linux WebKit and unrelated
-        # to this single-click calendar change.
+        # Verify the navigation uses a separate tab in ALL browser profiles.
+        # Intercept Google Maps to avoid relying on live Google responses.
         map_link = page.locator('#open-map')
         map_url = map_link.get_attribute('href')
         parsed = urlsplit(map_url)
         assert parsed.netloc == 'www.google.com' and parsed.path == '/maps/dir/'
         assert parse_qs(parsed.query) == {'api': ['1'], 'destination': [DESTINATION]}
-        assert map_link.get_attribute('target') == ('_self' if mobile else '_blank')
+        assert map_link.get_attribute('target') == '_blank'
+        assert 'noopener' in (map_link.get_attribute('rel') or '')
+        assert 'noreferrer' in (map_link.get_attribute('rel') or '')
+        context.route('https://www.google.com/maps/**',
+                      lambda route: route.fulfill(status=200, content_type='text/html',
+                                                  body='<title>Google Maps test destination</title>'))
+        original_url = page.url
+        with context.expect_page(timeout=15000) as new_page:
+            activate(page, '#open-map', mobile)
+        popup = new_page.value
+        popup.wait_for_url('**/maps/dir/**', timeout=15000)
+        assert popup.url == map_url, f'Navigation destination changed: {popup.url}'
+        assert len(context.pages) == 2
+        assert page.url == original_url, 'Invitation should remain in original tab'
+        assert page.locator('#invitation').is_visible()
+        popup.close()
+        assert page.url == original_url
 
         if ios:
             assert calendar.get_attribute('href') == calendar_url
@@ -142,7 +157,7 @@ def run_profile(browser, engine, name, settings, base):
             assert len(context.pages) == 1
             mode = 'single-click byte-identical ICS download'
         assert not errors, errors
-        REPORT.append({'test': f'{engine}/{name}', 'status': 'passed', 'calendar': mode, 'map': 'destination preserved'})
+        REPORT.append({'test': f'{engine}/{name}', 'status': 'passed', 'calendar': mode, 'map': 'opens a separate tab; original invitation preserved'})
     except Exception:
         try:
             page.screenshot(path=str(OUTPUT / f'{engine}-{name}-failure.png'), full_page=True)
