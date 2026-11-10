@@ -1,0 +1,44 @@
+name: Verify invitation interactions
+on:
+  push:
+    paths:
+      - app.js
+      - index.html
+      - styles.css
+      - assets/Jeremy_Yuri_Wedding.ics
+      - tests/**
+      - .github/workflows/reference-interactions.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: invitation-interactions-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  browser-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check JavaScript syntax
+        run: node --check app.js
+      - name: Install browser test driver
+        run: python3 -m pip install --disable-pip-version-check playwright==1.56.0
+      - name: Install Chromium and WebKit
+        run: python3 -m playwright install --with-deps chromium webkit
+      - name: Test desktop, iPhone, iPad and Android link activation
+        run: python3 tests/test_interactions.py
+      - name: Retain screenshots and the exact tested site
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: invitation-browser-tests
+          retention-days: 3
+          path: |
+            test-results/
+            app.js
+            index.html
+            styles.css
+            assets/

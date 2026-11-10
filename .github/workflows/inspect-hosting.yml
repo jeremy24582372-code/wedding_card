@@ -1,0 +1,62 @@
+name: Inspect reference hosting
+on:
+  push:
+    branches: [fix/reference-calendar-navigation]
+    paths: [.github/workflows/inspect-hosting.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compare public source files and calendar response headers
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+          from urllib.request import Request, urlopen
+          from urllib.parse import urljoin
+          report = {}
+          for name, base in {
+              'reference': 'https://jeremy-yuri-wedding-invitation.jeremy-hsieh.chatgpt.site/',
+              'pages': 'https://jeremy24582372-code.github.io/wedding_card/',
+          }.items():
+              report[name] = {}
+              for path in ['app.js?v=20261014-cover-loading', 'assets/Jeremy_Yuri_Wedding.ics?v=20261013-timed']:
+                  with urlopen(Request(urljoin(base, path), headers={'User-Agent': 'Mozilla/5.0'}), timeout=25) as response:
+                      body = response.read()
+                      report[name][path] = {
+                          'status': response.status,
+                          'content_type': response.headers.get('Content-Type'),
+                          'content_disposition': response.headers.get('Content-Disposition'),
+                          'bytes': len(body),
+                          'git_blob_sha': hashlib.sha1(b'blob ' + str(len(body)).encode() + b'\0' + body).hexdigest(),
+                          'sha256': hashlib.sha256(body).hexdigest(),
+                      }
+          report['same_reference_and_pages_app'] = report['reference']['app.js?v=20261014-cover-loading']['sha256'] == report['pages']['app.js?v=20261014-cover-loading']['sha256']
+          report['same_reference_and_pages_ics'] = report['reference']['assets/Jeremy_Yuri_Wedding.ics?v=20261013-timed']['sha256'] == report['pages']['assets/Jeremy_Yuri_Wedding.ics?v=20261013-timed']['sha256']
+          Path('test-results').mkdir(exist_ok=True)
+          Path('test-results/hosting.json').write_text(json.dumps(report, ensure_ascii=False, indent=2))
+          print(json.dumps(report, ensure_ascii=False, indent=2))
+          PY
+      - name: Retain the inspected branch for local verification
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: invitation-inspection
+          retention-days: 3
+          include-hidden-files: true
+          path: |
+            test-results/
+            app.js
+            index.html
+            styles.css
+            assets/
+            tests/
+            .github/workflows/deploy-pages.yml

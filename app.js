@@ -8,10 +8,21 @@
   const addCalendar = document.getElementById('add-calendar');
   const google = document.getElementById('google-calendar');
   const downloadCalendar = document.getElementById('download-ics');
+  const map = document.getElementById('open-map');
   const content = document.getElementById('site-content');
   const loader = document.getElementById('site-loading');
   const loadingMessage = document.getElementById('loading-message');
   const retryLoading = document.getElementById('retry-loading');
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent)
+    || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const isMobile = isIOS || /Android/i.test(navigator.userAgent);
+  // Keep the reference's HTTPS destinations. A direct, user-initiated mobile
+  // navigation lets the browser hand off to installed apps without a popup.
+  // The Google Maps / iOS confirmation belongs to the platform, not this site.
+  if (isMobile) {
+    map.target = '_self';
+    google.target = '_self';
+  }
   const isDetails = () => location.hash === '#invitation';
   const showPage = (focus = false) => {
     const active = isDetails();
@@ -94,22 +105,36 @@
     detailsReady = preloadImages(sources, 'low');
     return detailsReady;
   };
-  // Reuse one in-memory calendar download; retain the original link on failure.
-  const calendarFileURL = downloadCalendar.href;
+  // iOS must receive a real calendar resource, not a forced blob download.
+  // Resolving against document.baseURI also preserves GitHub Pages subpaths.
+  // The original ICS bytes (UID, times, location and reminder) stay unchanged.
+  const calendarFileURL = new URL(downloadCalendar.getAttribute('href'), document.baseURI).href;
+  if (isIOS) {
+    downloadCalendar.href = calendarFileURL;
+    downloadCalendar.removeAttribute('download');
+    downloadCalendar.type = 'text/calendar';
+    downloadCalendar.target = '_self';
+  }
   let calendarReady;
   const preloadCalendar = () => {
+    if (isIOS) return Promise.resolve();
     if (!calendarReady) {
       calendarReady = (async () => {
         const response = await fetch(calendarFileURL, {cache: 'force-cache', credentials: 'same-origin'});
-        if (!response.ok) return;
+        if (!response.ok) throw new Error('Calendar could not load');
         const content = await response.text();
-        if (!content.trimStart().startsWith('BEGIN:VCALENDAR')) return;
+        if (!content.trimStart().startsWith('BEGIN:VCALENDAR')) throw new Error('Invalid calendar response');
         downloadCalendar.href = URL.createObjectURL(new Blob([content], {type: 'text/calendar;charset=utf-8'}));
-      })().catch(() => {});
+      })().catch(() => {
+        // Keep the real file link and allow a retry after a transient failure.
+        calendarReady = null;
+      });
     }
     return calendarReady;
   };
+  let closeDialogTimer;
   addCalendar.addEventListener('click', () => {
+    clearTimeout(closeDialogTimer);
     void preloadCalendar();
     dialog.showModal();
   });
@@ -120,8 +145,14 @@
     if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) dialog.close();
   });
   dialog.addEventListener('close', () => {if (isDetails()) addCalendar.focus({preventScroll: true});});
-  google.addEventListener('click', () => dialog.close());
-  downloadCalendar.addEventListener('click', () => dialog.close());
+  // Let the trusted anchor activation run before hiding its dialog. Do not
+  // await a fetch, synthesize a click or open a window after a timer.
+  const closeAfterLinkActivation = () => {
+    clearTimeout(closeDialogTimer);
+    closeDialogTimer = setTimeout(() => { if (dialog.open) dialog.close(); }, 0);
+  };
+  google.addEventListener('click', closeAfterLinkActivation);
+  downloadCalendar.addEventListener('click', closeAfterLinkActivation);
   retryLoading.addEventListener('click', () => location.reload());
   showPage();
   const coverReady = preloadImages([
