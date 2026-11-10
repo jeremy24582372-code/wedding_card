@@ -5,20 +5,14 @@
   const open = document.getElementById('open-invitation');
   const back = document.getElementById('back-to-cover');
   const addCalendar = document.getElementById('add-calendar');
-  const map = document.getElementById('open-map');
   const content = document.getElementById('site-content');
   const loader = document.getElementById('site-loading');
   const loadingMessage = document.getElementById('loading-message');
   const retryLoading = document.getElementById('retry-loading');
   const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent)
     || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-  const isMobile = isIOS || /Android/i.test(navigator.userAgent);
-  // Keep the reference's HTTPS destinations. A direct, user-initiated mobile
-  // navigation lets the browser hand off to installed apps without a popup.
-  // The Google Maps / iOS confirmation belongs to the platform, not this site.
-  if (isMobile) {
-    map.target = '_self';
-  }
+  // Keep the navigation link's target="_blank" on mobile as well as desktop.
+  // A normal user-activated anchor leaves the invitation in its original tab.
   const isDetails = () => location.hash === '#invitation';
   const showPage = (focus = false) => {
     const active = isDetails();
