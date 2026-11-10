@@ -42,6 +42,16 @@ jobs:
               page, count = re.subn(pattern, lambda m: m.group(1) + html.escape(url, quote=True), page, count=1)
               if count != 1:
                   raise SystemExit(f"Missing {prop}")
+          # A fixed 2026-10-14 query string can keep the pre-fix script cached.
+          # Version the deployed script without changing the reference artwork.
+          version = os.environ["GITHUB_SHA"]
+          page, count = re.subn(
+              r'(<script\s+src="app\.js)(?:\?[^\"]*)?("\s)',
+              lambda m: m.group(1) + "?v=" + version + m.group(2),
+              page, count=1,
+          )
+          if count != 1:
+              raise SystemExit("Missing invitation script")
           path.write_text(page, encoding="utf-8")
           PY
       - uses: actions/upload-pages-artifact@v4
