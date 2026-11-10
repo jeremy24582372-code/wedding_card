@@ -13,6 +13,7 @@ import json
 import re
 import tempfile
 import threading
+import traceback
 from datetime import datetime
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -79,7 +80,7 @@ def ready(page, url):
     page.goto(url, wait_until='load')
     page.locator('#site-loading').wait_for(state='hidden')
     assert page.locator('#invitation').is_visible()
-    assert not page.locator('#site-content').get_attribute('inert')
+    assert page.locator('#site-content').get_attribute('inert') is None
 
 
 def activate(page, selector, mobile):
@@ -87,6 +88,13 @@ def activate(page, selector, mobile):
         page.locator(selector).tap()
     else:
         page.locator(selector).click()
+
+
+def closed(page):
+    # Link handlers deliberately close on the next task, after native activation.
+    # A download event can arrive first; assert the eventual UI state, not timing.
+    page.wait_for_function("!document.querySelector('#calendar-dialog').open", timeout=5000)
+    assert not page.locator('#calendar-dialog').evaluate('(d) => d.open')
 
 
 def run_profile(browser, engine, name, settings, base):
@@ -139,7 +147,7 @@ def run_profile(browser, engine, name, settings, base):
         assert page.locator('#calendar-dialog').evaluate('(d) => d.open')
         page.screenshot(path=str(OUTPUT / f'{engine}-{name}-calendar.png'), full_page=True)
         activate(page, '#close-dialog', mobile)
-        assert not page.locator('#calendar-dialog').evaluate('(d) => d.open')
+        closed(page)
         activate(page, '#add-calendar', mobile)
         google_url = page.locator('#google-calendar').get_attribute('href')
         assert parse_qs(urlsplit(google_url).query) == EVENT
@@ -158,7 +166,7 @@ def run_profile(browser, engine, name, settings, base):
         else:
             assert len(context.pages) == 2
             context.pages[-1].close()
-        assert not page.locator('#calendar-dialog').evaluate('(d) => d.open')
+        closed(page)
 
         activate(page, '#add-calendar', mobile)
         phone = page.locator('#download-ics')
@@ -181,13 +189,16 @@ def run_profile(browser, engine, name, settings, base):
             download = pending.value
             assert download.suggested_filename == 'Jeremy_Yuri_Wedding.ics'
             assert Path(download.path()).read_bytes() == ICS
-            assert not page.locator('#calendar-dialog').evaluate('(d) => d.open')
+            closed(page)
             activate(page, '#add-calendar', mobile)
             assert phone.get_attribute('href') == blob_url, 'Reuse the prepared calendar instead of fetching repeatedly'
         assert not errors, errors
         REPORT.append({'test': f'{engine}/{name}', 'status': 'passed', 'map': map_url, 'google': google_url, 'phone_calendar': 'real .ics navigation' if ios else 'byte-identical .ics download'})
     except Exception:
-        page.screenshot(path=str(OUTPUT / f'{engine}-{name}-failure.png'), full_page=True)
+        try:
+            page.screenshot(path=str(OUTPUT / f'{engine}-{name}-failure.png'), full_page=True)
+        except Exception:
+            pass
         raise
     finally:
         context.close()
@@ -216,9 +227,16 @@ def run_fetch_failure(browser, engine, base):
         with page.expect_download() as pending:
             page.locator('#download-ics').click()
         assert Path(pending.value.path()).read_bytes() == ICS
+        closed(page)
         REPORT.append({'test': f'{engine}/calendar-fetch-retry', 'status': 'passed'})
     finally:
         context.close()
+
+
+def record_failure(name):
+    error = traceback.format_exc()
+    print(error, flush=True)
+    REPORT.append({'test': name, 'status': 'failed', 'error': error})
 
 
 def main():
@@ -235,8 +253,14 @@ def main():
                     browser = getattr(pw, engine).launch()
                     try:
                         for name, settings in PROFILES.items():
-                            run_profile(browser, engine, name, settings, base)
-                        run_fetch_failure(browser, engine, base)
+                            try:
+                                run_profile(browser, engine, name, settings, base)
+                            except Exception:
+                                record_failure(f'{engine}/{name}')
+                        try:
+                            run_fetch_failure(browser, engine, base)
+                        except Exception:
+                            record_failure(f'{engine}/calendar-fetch-retry')
                     finally:
                         browser.close()
         finally:
@@ -245,6 +269,9 @@ def main():
             thread.join()
             (OUTPUT / 'report.json').write_text(json.dumps(REPORT, ensure_ascii=False, indent=2), encoding='utf-8')
             print(json.dumps(REPORT, ensure_ascii=False, indent=2))
+    failures = [item for item in REPORT if item['status'] == 'failed']
+    if failures:
+        raise SystemExit(f'FAIL: {len(failures)} of {len(REPORT)} test groups failed.')
     print(f'PASS: {len(REPORT)} test groups. Real iOS Calendar / Google Maps app confirmation still requires device verification.')
 
 
