@@ -1,8 +1,12 @@
 name: Verify invitation interactions
 on:
   push:
-    branches: [fix/reference-calendar-navigation]
     paths:
+      - app.js
+      - index.html
+      - styles.css
+      - assets/Jeremy_Yuri_Wedding.ics
+      - tests/**
       - .github/workflows/reference-interactions.yml
   workflow_dispatch:
 permissions:
@@ -11,84 +15,30 @@ concurrency:
   group: invitation-interactions-${{ github.ref }}
   cancel-in-progress: true
 jobs:
-  reference-audit:
-    runs-on: ubuntu-latest
-    timeout-minutes: 6
+  browser-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check JavaScript syntax
+        run: node --check app.js
       - name: Install browser test driver
         run: python3 -m pip install --disable-pip-version-check playwright==1.56.0
-      - name: Read reference and exercise its buttons (no calendar event is saved)
-        run: |
-          python3 - <<'PY'
-          import json
-          import shutil
-          import traceback
-          from html.parser import HTMLParser
-          from urllib.request import Request, urlopen
-          from urllib.parse import urljoin, urlsplit
-          from playwright.sync_api import sync_playwright
-
-          base = 'https://jeremy-yuri-wedding-invitation.jeremy-hsieh.chatgpt.site/'
-          class Markup(HTMLParser):
-              def __init__(self):
-                  super().__init__()
-                  self.elements = []
-              def handle_starttag(self, tag, attrs):
-                  attrs = dict(attrs)
-                  if tag == 'script' or attrs.get('id') in ['open-map', 'add-calendar', 'google-calendar', 'download-ics', 'calendar-dialog']:
-                      self.elements.append({'tag': tag, **attrs})
-          def fetch(path):
-              url = urljoin(base, path)
-              with urlopen(Request(url, headers={'User-Agent': 'Mozilla/5.0'}), timeout=30) as response:
-                  data = response.read().decode('utf-8')
-                  print('REFERENCE_RESPONSE', json.dumps({'url': url, 'status': response.status, 'headers': dict(response.headers)}, ensure_ascii=False))
-                  return data
-          html = fetch('')
-          markup = Markup()
-          markup.feed(html)
-          print('REFERENCE_ELEMENTS', json.dumps(markup.elements, ensure_ascii=False))
-          for item in markup.elements:
-              src = item.get('src', '')
-              if item['tag'] == 'script' and 'app.js' in src:
-                  print('REFERENCE_APP_BEGIN\n' + fetch(src) + '\nREFERENCE_APP_END')
-              if item.get('id') == 'download-ics':
-                  print('REFERENCE_ICS_BEGIN\n' + fetch(item['href']) + '\nREFERENCE_ICS_END')
-          print('REFERENCE_HTML_TAIL', html[-8000:])
-          with sync_playwright() as pw:
-              chrome = shutil.which('google-chrome') or shutil.which('chromium') or shutil.which('chromium-browser')
-              browser = pw.chromium.launch(executable_path=chrome, args=['--no-sandbox'])
-              for name, selector in [('navigation', '#open-map'), ('google-calendar', '#google-calendar'), ('phone-calendar', '#download-ics')]:
-                  context = browser.new_context(viewport={'width': 390, 'height': 844}, is_mobile=True, has_touch=True,
-                      user_agent='Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1')
-                  page = context.new_page()
-                  events = []
-                  def handle_dialog(dialog):
-                      events.append({'type': 'dialog', 'kind': dialog.type, 'message': dialog.message})
-                      dialog.dismiss()
-                  def handle_download(download):
-                      events.append({'type': 'download', 'url': download.url, 'filename': download.suggested_filename})
-                      download.cancel()
-                  def observe_page(p):
-                      p.on('dialog', handle_dialog)
-                      p.on('download', handle_download)
-                      p.on('framenavigated', lambda frame: events.append({'type': 'navigation', 'url': frame.url}) if frame == p.main_frame else None)
-                  observe_page(page)
-                  context.on('page', observe_page)
-                  try:
-                      page.goto(base + '#invitation', wait_until='networkidle', timeout=45000)
-                      if name != 'navigation':
-                          page.locator('#add-calendar').click(timeout=20000)
-                      print('REFERENCE_BUTTON', name, page.locator(selector).evaluate('(a) => ({href: a.href, target: a.target, download: a.download, html: a.outerHTML})'))
-                      events.clear()
-                      page.locator(selector).click(timeout=20000)
-                      page.wait_for_timeout(3000)
-                      print('REFERENCE_CLICK', name, json.dumps(events, ensure_ascii=False))
-                      print('REFERENCE_AFTER_CLICK', name, json.dumps([{'url': p.url, 'text': p.locator('body').inner_text(timeout=5000)[:3000]} for p in context.pages], ensure_ascii=False))
-                  except Exception:
-                      traceback.print_exc()
-                      print('REFERENCE_CLICK_ERROR', name, json.dumps(events, ensure_ascii=False))
-                  finally:
-                      context.close()
-              browser.close()
-          PY
+      - name: Install Chromium and WebKit
+        run: python3 -m playwright install --with-deps chromium webkit
+      - name: Test desktop, iPhone, iPad and Android link activation
+        run: python3 tests/test_interactions.py
+      - name: Retain screenshots and the exact tested site
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: invitation-browser-tests
+          retention-days: 3
+          path: |
+            test-results/
+            app.js
+            index.html
+            styles.css
+            assets/
